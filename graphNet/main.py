@@ -403,6 +403,112 @@ class GraphVisualization(pg.GraphicsLayoutWidget):
 
 
 # ------------------------------
+# FlowGraph Widget
+# ------------------------------
+class FlowTimelineWidget(pg.GraphicsLayoutWidget):
+    """
+    A widget that displays a vertical timeline of connections.
+    Each connection (edge) is represented by a clickable node arranged in a vertical column.
+    The nodes are drawn as black circles with an order number next to them,
+    and arrows connect consecutive nodes.
+    When a node is clicked, it turns red and emits its metadata.
+    """
+    connectionClicked = pyqtSignal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Create a PlotItem for the timeline.
+        self.plot = self.addPlot()
+        self.plot.setMouseEnabled(x=False, y=False)
+        self.plot.hideAxis('bottom')
+        self.plot.hideAxis('left')
+        # Add a grid to the background.
+        self.grid = pg.GridItem(pen=pg.mkPen('#44475a', width=1, style=Qt.DotLine))
+        self.grid.setZValue(-100)
+        self.plot.addItem(self.grid)
+        # Create a ScatterPlotItem for timeline nodes.
+        self.scatter = pg.ScatterPlotItem(size=20, pen=pg.mkPen(None), brush=pg.mkBrush(0, 0, 0))
+        self.plot.addItem(self.scatter)
+        self.scatter.sigClicked.connect(self.onScatterClicked)
+        # We'll store the current spots (timeline nodes) here.
+        self.current_spots = []
+        # Also store order labels and arrow items.
+        self.orderLabels = []
+        self.arrows = []
+
+    def updateTimeline(self, edges):
+        """
+        Given a list of edges (each a tuple: (source, destination, data)),
+        sort them by 'start_time' and display a vertical timeline.
+        Each timeline node is placed at x = 0.5 with a vertical spacing.
+        An order number is displayed next to each node, and arrows connect consecutive nodes.
+        """
+        # Clear the plot (which removes all items).
+        self.plot.clear()
+        # Re-add the grid and scatter item.
+        self.grid = pg.GridItem(pen=pg.mkPen('#44475a', width=1, style=Qt.DotLine))
+        self.grid.setZValue(-100)
+        self.plot.addItem(self.grid)
+        self.plot.addItem(self.scatter)
+
+        # Clear stored labels and arrows.
+        self.orderLabels = []
+        self.arrows = []
+
+        # Sort edges by start_time.
+        sorted_edges = sorted(edges, key=lambda e: e[2].get('start_time', 0))
+        spacing = 50  # Adjust vertical spacing as needed.
+        spots = []
+        for i, (u, v, data) in enumerate(sorted_edges):
+            y = i * spacing
+            # Create a timeline node (spot) for the connection.
+            spot = {
+                'pos': (0.5, y),
+                'brush': pg.mkBrush(0, 0, 0),  # Black by default.
+                'symbol': 'o',
+                'size': 20,
+                'data': {'source': u, 'destination': v, **data}
+            }
+            spots.append(spot)
+            # Create a label for the order number.
+            label = pg.TextItem(text=str(i+1), color='w', anchor=(1, 0.5))
+            label.setPos(0.3, y)
+            self.plot.addItem(label)
+            self.orderLabels.append(label)
+            # If not the last node, draw an arrow from this node to the next expected position.
+            if i < len(sorted_edges) - 1:
+                # We'll draw an arrow pointing downward.
+                arrow = pg.ArrowItem(pos=(0.5, y + spacing/2), angle=90, headLen=10, tipAngle=30, baseAngle=20, brush='w')
+                self.plot.addItem(arrow)
+                self.arrows.append(arrow)
+        self.current_spots = spots
+        self.scatter.setData(spots)
+        # Set fixed view ranges.
+        self.plot.setXRange(0, 1)
+        self.plot.setYRange(-spacing/2, spacing * (len(spots)))
+
+    def onScatterClicked(self, scatter, points):
+        """
+        When a timeline node is clicked, reset all nodes to black,
+        set the clicked node to red, and emit its connection metadata.
+        """
+        # Reset all spots to black.
+        for spot in self.current_spots:
+            spot['brush'] = pg.mkBrush(0, 0, 0)
+        if points:
+            clicked_data = points[0].data()
+            # Find the matching spot based on source and destination.
+            for spot in self.current_spots:
+                if (spot['data'].get('source') == clicked_data.get('source') and
+                    spot['data'].get('destination') == clicked_data.get('destination')):
+                    spot['brush'] = pg.mkBrush('r')
+                    self.connectionClicked.emit(spot['data'])
+                    break
+        self.scatter.setData(self.current_spots)
+
+
+
+# ------------------------------
 # Main Application Window
 # ------------------------------
 class MainWindow(QMainWindow):
@@ -432,21 +538,13 @@ class MainWindow(QMainWindow):
         self.move(frame_geometry.topLeft())
 
     def _init_ui(self):
-        """
-        Sets up the main window with:
-         - A left panel containing the reset button and graph canvas.
-         - A right side panel for metadata display.
-         - Wiring of interactive signals (node/edge selection) to update the metadata panel.
-        """
         main_widget = QWidget()
         main_layout = QHBoxLayout(main_widget)
         left_layout = QVBoxLayout()
-
-        # Instantiate graph visualization first.
+        
+        # Left panel: Graph visualization and control bar.
         self.graph_view = GraphVisualization()
         self.graph_view.setBackground('#282a36')
-
-        # Create control bar with "Reset View" button.
         control_bar = QHBoxLayout()
         reset_btn = QPushButton("Reset View")
         reset_btn.clicked.connect(self.graph_view.reset_view)
@@ -454,30 +552,36 @@ class MainWindow(QMainWindow):
         control_bar.addStretch()
         left_layout.addLayout(control_bar)
         left_layout.addWidget(self.graph_view, 1)
-
-        # Metadata panel on right.
+        
+        # Right panel: Vertical layout for metadata and the flow timeline.
+        right_layout = QVBoxLayout()
         self.metadata_panel = QLabel("Detailed node & edge information.")
         self.metadata_panel.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.metadata_panel.setWordWrap(True)
         self.metadata_panel.setStyleSheet("background-color: #21222c; color: #f8f8f2; padding: 10px;")
+        right_layout.addWidget(self.metadata_panel, 2)  # For example, 2/3 of the space.
+        
+        self.flow_timeline = FlowTimelineWidget()
+        self.flow_timeline.setBackground('#21222c')
+        right_layout.addWidget(self.flow_timeline, 1)  # 1/3 of the space.
+        
         main_layout.addLayout(left_layout, 3)
-        main_layout.addWidget(self.metadata_panel, 1)
-        self.setCentralWidget(main_widget)
-
+        main_layout.addLayout(right_layout, 1)
         main_widget.setStyleSheet("background-color: #21222c; color: #f8f8f2;")
-
-
-        # Wire signals to update metadata panel.
+        self.setCentralWidget(main_widget)
+        
+        # Connect signals.
         self.graph_view.nodeSelected.connect(self.update_metadata_panel_for_node)
         self.graph_view.edgeSelected.connect(self.update_metadata_panel_for_edge)
+        self.flow_timeline.connectionClicked.connect(self.update_metadata_panel_for_edge)
+
 
     def _create_sample_graph(self):
-        """
-        Generates and displays a sample graph.
-        """
         sample_graph = self.graph_view.create_sample_graph()
         self.graph_view.set_graph(sample_graph)
         self.statusBar().showMessage("Displaying sample graph - Drop a JSON file to load real data")
+        edges_list = [(u, v, data) for u, v, data in sample_graph.edges(data=True)]
+        self.flow_timeline.updateTimeline(edges_list)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         """
@@ -520,6 +624,8 @@ class MainWindow(QMainWindow):
             status_message = (f"Graph updated: Total nodes: {total_nodes}, "
                               f"Unique protocols: {len(unique_protocols)}")
             self.statusBar().showMessage(status_message)
+            edges_list = [(u, v, data) for u, v, data in parsed_graph.edges(data=True)]
+            self.flow_timeline.updateTimeline(edges_list)
         except Exception as e:
             self._show_error(str(e))
 
