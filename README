@@ -7,9 +7,9 @@ If P(A) is what we find from building a net given select sources,
 and P(B|A) is all the future possibilities, then P(A|B) is the future predicted.
 
 
-						P(A|B) = P(B|A) · P(A)
-								 -------------
-									 P(B)
+P(A|B) = P(B|A) · P(A)
+		 -------------
+			 P(B)
 
 
 
