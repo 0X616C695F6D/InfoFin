@@ -8,8 +8,8 @@ and P(B|A) is all the future possibilities, then P(A|B) is the future predicted.
 
 
 P(A|B) = P(B|A) · P(A)
-		 -------------
-			 P(B)
+ -------------
+	 P(B)
 
 
 
