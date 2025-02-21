@@ -1,4 +1,5 @@
 import sys
+import math
 import random
 import json
 import os
@@ -19,12 +20,10 @@ import pyqtgraph as pg
 # ------------------------------
 class DraggableScatterPlotItem(pg.ScatterPlotItem):
     """
-    Custom ScatterPlotItem to enable node selection (with multi-select via Ctrl+Click)
-    and dragging. Emits a signal when selection changes or nodes are moved.
+    Custom ScatterPlotItem that supports node selection and dragging.
+    Stores the original spot data so that positions can be updated during dragging.
     """
-    # Emits a dict mapping node ID to its metadata when selection changes.
     nodeSelectionChanged = pyqtSignal(dict)
-    # Emits when one or more nodes have been moved.
     nodesMoved = pyqtSignal()
 
     def __init__(self, *args, **kwargs):
@@ -33,26 +32,35 @@ class DraggableScatterPlotItem(pg.ScatterPlotItem):
         self._dragging = False
         self._drag_start_pos = None
         self.selectedPoints = []  # List of currently selected spots
+        self.spotsData = []       # Store the original list of spot dictionaries
+
+    def setData(self, *args, **kwargs):
+        # Intercept the data passed to setData and store it.
+        if args:
+            data = args[0]
+        elif 'data' in kwargs:
+            data = kwargs['data']
+        else:
+            data = []
+        self.spotsData = data.copy()  # make a copy of the spot list
+        return super().setData(*args, **kwargs)
 
     def mousePressEvent(self, event):
-        pos = event.pos()  # Position in the item's coordinates
+        pos = event.pos()
         clicked_points = self.pointsAt(pos)
         modifiers = event.modifiers()
         if clicked_points:
             if modifiers & Qt.ControlModifier:
-                # Toggle selection: add if not selected, remove if already selected.
                 for p in clicked_points:
-                    if p in self.selectedPoints:
-                        self.selectedPoints.remove(p)
-                    else:
+                    if p not in self.selectedPoints:
                         self.selectedPoints.append(p)
+                    else:
+                        self.selectedPoints.remove(p)
             else:
-                # Clear previous selection and select the clicked point(s).
                 self.selectedPoints = clicked_points
             self._dragging = True
             self._drag_start_pos = event.pos()
             self.updateSelectionAppearance()
-            # Emit metadata for the selected nodes.
             selected_metadata = {}
             for p in self.selectedPoints:
                 data = p.data()  # data is a dict with keys "id" and "metadata"
@@ -60,7 +68,6 @@ class DraggableScatterPlotItem(pg.ScatterPlotItem):
             self.nodeSelectionChanged.emit(selected_metadata)
             event.accept()
         else:
-            # Clicked on blank space; clear selection.
             self.selectedPoints = []
             self.updateSelectionAppearance()
             self.nodeSelectionChanged.emit({})
@@ -69,9 +76,18 @@ class DraggableScatterPlotItem(pg.ScatterPlotItem):
     def mouseMoveEvent(self, event):
         if self._dragging and self.selectedPoints:
             delta = event.pos() - self._drag_start_pos
+            # For each selected point, update its position in the stored data.
             for p in self.selectedPoints:
-                newPos = p.pos() + delta
-                p.setPos(newPos)
+                node_id = p.data()['id']
+                # Find the corresponding dictionary in spotsData.
+                for spot in self.spotsData:
+                    if spot['data']['id'] == node_id:
+                        oldPos = spot['pos']
+                        newPos = (oldPos[0] + delta.x(), oldPos[1] + delta.y())
+                        spot['pos'] = newPos
+                        break
+            # Reapply the updated spotsData.
+            self.setData(self.spotsData)
             self._drag_start_pos = event.pos()
             self.nodesMoved.emit()
             event.accept()
@@ -85,26 +101,21 @@ class DraggableScatterPlotItem(pg.ScatterPlotItem):
 
     def updateSelectionAppearance(self):
         """
-        Updates each node's appearance. Selected nodes are highlighted in red.
+        Updates each node's appearance. Selected nodes are highlighted in red,
+        while non-selected nodes remain black.
         """
         for p in self.points():
             if p in self.selectedPoints:
                 p.setBrush(pg.mkBrush('r'))
             else:
-                p.setBrush(pg.mkBrush(100, 150, 200, 200))
+                p.setBrush(pg.mkBrush(0, 0, 0))
 
 
 # ------------------------------
 # Custom Edge Item with Hover and Click Interaction
 # ------------------------------
 class EdgeItem(pg.PlotCurveItem):
-    """
-    Custom PlotCurveItem representing an edge.
-    It supports hover events (to display a tooltip with basic metadata)
-    and emits a signal when clicked.
-    """
-    edgeClicked = pyqtSignal(dict)  # Emits edge metadata when clicked.
-
+    edgeClicked = pyqtSignal(dict)
     def __init__(self, x, y, metadata, *args, **kwargs):
         super().__init__(x=x, y=y, *args, **kwargs)
         self.metadata = metadata
@@ -113,7 +124,7 @@ class EdgeItem(pg.PlotCurveItem):
     def hoverEnterEvent(self, event):
         tooltip_text = (f"Protocol: {self.metadata.get('protocol', 'Unknown')}\n"
                         f"Packets: {self.metadata.get('packets', 0)}")
-        QToolTip.showText(event.screenPos().toPoint(), tooltip_text)
+        QToolTip.showText(event.screenPos(), tooltip_text)
         event.accept()
 
     def hoverLeaveEvent(self, event):
@@ -123,6 +134,7 @@ class EdgeItem(pg.PlotCurveItem):
     def mousePressEvent(self, event):
         self.edgeClicked.emit(self.metadata)
         event.accept()
+
 
 
 # ------------------------------
@@ -147,15 +159,19 @@ class GraphVisualization(pg.GraphicsLayoutWidget):
         self.plot_item.setAspectLocked(True)
         self.plot_item.hideAxis('left')
         self.plot_item.hideAxis('bottom')
-        self.plot_item.showGrid(x=True, y=True, alpha=0.3)
-        # Enable built-in mouse wheel zooming and dragging (pan).
-        self.plot_item.vb.setMouseMode(pg.ViewBox.RectMode)
+        grid = pg.GridItem(pen=pg.mkPen('#44475a', width=1, style=Qt.DotLine))
+        grid = pg.GridItem(pen=pg.mkPen('#44475a', width=1, style=Qt.DotLine))
+        grid.setZValue(-100)  # Ensure the grid is behind other items.
+        self.plot_item.vb.addItem(grid)
+        # PanMode for easy controls
+        self.plot_item.vb.setMouseMode(pg.ViewBox.PanMode)
 
         # Use custom draggable scatter plot for nodes.
         self.node_scatter = DraggableScatterPlotItem(
+            clickable=True,
             size=30,
             pen=pg.mkPen(width=2, color='k'),
-            brush=pg.mkBrush(100, 150, 200, 200)
+            brush=pg.mkBrush(0,0,0,0)
         )
         self.plot_item.addItem(self.node_scatter)
         self.node_scatter.nodeSelectionChanged.connect(self.on_node_selection_changed)
@@ -179,39 +195,87 @@ class GraphVisualization(pg.GraphicsLayoutWidget):
     def update_visualization(self):
         """
         Renders nodes and edges using stored positions.
+        The edge endpoints are adjusted so they always connect at the node's border.
+        Edges are colored based on their protocol.
         """
+        # Clear existing nodes and edges.
         self.clear_visualization()
+
+        node_size = 30
+        node_radius_pixels = node_size / 2  # 15 pixels
+
+        # Get the size of one pixel in scene units.
+        vb = self.plot_item.vb
+        pixel_size = vb.viewPixelSize()  # returns a tuple, e.g., (scene_x, scene_y)
+        scene_offset = node_radius_pixels * pixel_size[0]  # Use the x-value of the pixel size
+
+        # Define protocol colors.
+        protocol_colors = {
+            'TCP': (255,255,255),         # Blue
+            'UDP': (91,201,79),         # Green
+            'ICMP': (255, 0, 0),        # Red
+            'HTTP': (255, 165, 0),      # Orange
+            'DNS': (128, 0, 128),       # Purple
+            'ARP': (0, 255, 255),       # Cyan
+            'TLS/SSL': (255, 192, 203), # Pink
+            'SSH': (139, 69, 19),       # Brown
+            'FTP': (0, 128, 128),       # Teal
+            'SMTP': (128, 128, 0),      # Olive
+            'POP': (255, 20, 147),      # Deep Pink
+            'IMAP': (75, 0, 130),       # Indigo
+            'DHCP': (210, 105, 30)      # Chocolate
+        }
+
+        # Build node spots (nodes are drawn as black circles).
         spots = []
         self.node_data = {}
         for node, position in self.node_positions.items():
             self.node_data[node] = self.graph.nodes[node]
             spots.append({
                 'pos': position,
-                'size': 30,
+                'size': node_size,
                 'pen': {'color': 'k', 'width': 2},
-                'brush': pg.mkBrush(100, 150, 200, 200),
+                'brush': pg.mkBrush(0, 0, 0),  # Black fill for nodes.
                 'symbol': 'o',
                 'data': {'id': node, 'metadata': self.graph.nodes[node]}
             })
         self.node_scatter.setData(spots)
 
+        # Draw edges.
         self.edge_items = []
         self.edge_node_pairs = []
         for u, v, data in self.graph.edges(data=True):
             if u in self.node_positions and v in self.node_positions:
                 pos_u = self.node_positions[u]
                 pos_v = self.node_positions[v]
+                dx = pos_v[0] - pos_u[0]
+                dy = pos_v[1] - pos_u[1]
+                dist = math.hypot(dx, dy)
+                if dist > 0:
+                    offset_x = (dx / dist) * scene_offset
+                    offset_y = (dy / dist) * scene_offset
+                else:
+                    offset_x = offset_y = 0
+                new_pos_u = (pos_u[0] + offset_x, pos_u[1] + offset_y)
+                new_pos_v = (pos_v[0] - offset_x, pos_v[1] - offset_y)
+
+                protocol = data.get('protocol', 'Unknown')
+                pen_color = protocol_colors.get(protocol, (150, 150, 150))
+
                 edge_line = EdgeItem(
-                    x=[pos_u[0], pos_v[0]],
-                    y=[pos_u[1], pos_v[1]],
+                    x=[new_pos_u[0], new_pos_v[0]],
+                    y=[new_pos_u[1], new_pos_v[1]],
                     metadata=data,
-                    pen=pg.mkPen(color=(100, 100, 100), width=1.5)
+                    pen=pg.mkPen(color=pen_color, width=1.5)
                 )
                 self.plot_item.addItem(edge_line)
                 edge_line.edgeClicked.connect(self.on_edge_clicked)
                 self.edge_items.append(edge_line)
                 self.edge_node_pairs.append((u, v))
+
         self.plot_item.autoRange()
+
+
 
     def clear_visualization(self):
         """
@@ -239,15 +303,37 @@ class GraphVisualization(pg.GraphicsLayoutWidget):
         self.update_edge_positions()
         self.check_auto_recenter()
 
+
     def update_edge_positions(self):
         """
-        Updates edge positions to follow node movements.
+        Updates the positions of all edges when nodes are moved,
+        ensuring that edges always connect at the node border.
         """
+        import math
+        node_size = 30
+        node_radius_pixels = node_size / 2  # 15 pixels
+        
+        vb = self.plot_item.vb
+        pixel_size = vb.viewPixelSize()  # returns a tuple (x, y)
+        scene_offset = node_radius_pixels * pixel_size[0]
+        
         for edge_item, (u, v) in zip(self.edge_items, self.edge_node_pairs):
             if u in self.node_positions and v in self.node_positions:
                 pos_u = self.node_positions[u]
                 pos_v = self.node_positions[v]
-                edge_item.setData(x=[pos_u[0], pos_v[0]], y=[pos_u[1], pos_v[1]])
+                dx = pos_v[0] - pos_u[0]
+                dy = pos_v[1] - pos_u[1]
+                dist = math.hypot(dx, dy)
+                if dist > 0:
+                    offset_x = (dx / dist) * scene_offset
+                    offset_y = (dy / dist) * scene_offset
+                else:
+                    offset_x = offset_y = 0
+                new_pos_u = (pos_u[0] + offset_x, pos_u[1] + offset_y)
+                new_pos_v = (pos_v[0] - offset_x, pos_v[1] - offset_y)
+                edge_item.setData(x=[new_pos_u[0], new_pos_v[0]], 
+                                  y=[new_pos_u[1], new_pos_v[1]])
+
 
     def check_auto_recenter(self):
         """
@@ -358,7 +444,7 @@ class MainWindow(QMainWindow):
 
         # Instantiate graph visualization first.
         self.graph_view = GraphVisualization()
-        self.graph_view.setBackground('w')
+        self.graph_view.setBackground('#282a36')
 
         # Create control bar with "Reset View" button.
         control_bar = QHBoxLayout()
@@ -370,13 +456,16 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.graph_view, 1)
 
         # Metadata panel on right.
-        self.metadata_panel = QLabel("Node/Edge metadata will appear here.")
+        self.metadata_panel = QLabel("Detailed node & edge information.")
         self.metadata_panel.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.metadata_panel.setWordWrap(True)
-        self.metadata_panel.setStyleSheet("background-color: #f0f0f0; padding: 10px;")
+        self.metadata_panel.setStyleSheet("background-color: #21222c; color: #f8f8f2; padding: 10px;")
         main_layout.addLayout(left_layout, 3)
         main_layout.addWidget(self.metadata_panel, 1)
         self.setCentralWidget(main_widget)
+
+        main_widget.setStyleSheet("background-color: #21222c; color: #f8f8f2;")
+
 
         # Wire signals to update metadata panel.
         self.graph_view.nodeSelected.connect(self.update_metadata_panel_for_node)
@@ -445,25 +534,33 @@ class MainWindow(QMainWindow):
         if not node_metadata:
             self.metadata_panel.setText("No node selected.")
             return
-        text_lines = []
+
+    def update_metadata_panel_for_node(self, node_metadata):
+        """
+        Update the side panel with structured metadata for the selected node(s).
+        If multiple nodes are selected, display a table for each.
+        """
+        if not node_metadata:
+            self.metadata_panel.setText("No node selected.")
+            return
+
+        html = "<html><body>"
         for node, meta in node_metadata.items():
-            text_lines.append(f"Node: {node}")
-            for key, value in meta.items():
-                text_lines.append(f"  {key}: {value}")
-            text_lines.append("")
-        self.metadata_panel.setText("\n".join(text_lines))
+            html += f"<h3>Node: {node}</h3>"
+            html += format_metadata_as_table(meta)
+        html += "</body></html>"
+        self.metadata_panel.setText(html)
 
     def update_metadata_panel_for_edge(self, edge_metadata):
         """
-        Updates the side panel with metadata for the selected edge.
+        Updates the side panel with structured (HTML table) metadata for the selected edge.
         """
         if not edge_metadata:
             self.metadata_panel.setText("No edge selected.")
             return
-        text_lines = ["Edge Metadata:"]
-        for key, value in edge_metadata.items():
-            text_lines.append(f"{key}: {value}")
-        self.metadata_panel.setText("\n".join(text_lines))
+        # Format the metadata as an HTML table.
+        html = format_edge_metadata_as_table(edge_metadata)
+        self.metadata_panel.setText(html)
 
 
 # ------------------------------
@@ -562,8 +659,7 @@ def parse_wireshark_json(json_data):
         G.add_edge(src, dst, 
                    protocol=protocol, packets=total_packets, bytes=total_bytes,
                    start_time=first_packet_time, end_time=last_packet_time,
-                   duration=duration, src_port=src_port, dst_port=dst_port,
-                   packet_details=packets)
+                   duration=duration, src_port=src_port, dst_port=dst_port)
     return G
 
 def load_and_parse_wireshark_file(file_path):
@@ -583,6 +679,47 @@ def load_and_parse_wireshark_file(file_path):
     except Exception as e:
         raise Exception(f"Error processing Wireshark JSON file: {str(e)}")
 
+
+# ------------------------------
+# HTML Structured Output
+# ------------------------------
+def format_edge_metadata_as_table(metadata):
+    """
+    Convert a dictionary of edge metadata into an HTML table.
+    If a value is a list or tuple, it is joined with line breaks.
+    """
+    html = "<html><body><table border='1' cellspacing='0' cellpadding='3'>"
+    for key, value in metadata.items():
+        # If the value is a list or tuple, join its items with line breaks.
+        if isinstance(value, (list, tuple)):
+            value = "<br>".join(str(v) for v in value)
+        html += f"<tr><th align='left'>{key}</th><td align='left'>{value}</td></tr>"
+    html += "</table></body></html>"
+    return html
+
+def format_metadata_as_table(metadata, skip_keys=None):
+    """
+    Converts a metadata dictionary into an HTML table.
+
+    Parameters:
+        metadata (dict): The metadata to format.
+        skip_keys (list): Keys to omit from the table.
+
+    Returns:
+        str: HTML string representing the table.
+    """
+    if skip_keys is None:
+        skip_keys = []
+    html = "<html><body><table border='1' cellspacing='0' cellpadding='3'>"
+    for key, value in metadata.items():
+        if key in skip_keys:
+            continue
+        # If value is a list or tuple, join its elements on separate lines.
+        if isinstance(value, (list, tuple)):
+            value = "<br>".join(str(v) for v in value)
+        html += f"<tr><th align='left'>{key}</th><td align='left'>{value}</td></tr>"
+    html += "</table></body></html>"
+    return html
 
 # ------------------------------
 # Application Entry Point

@@ -1,0 +1,31 @@
+What are we trying to do?
+
+Predict future given a select source of information. From a research
+perspective.
+
+If P(A) is what we find from building a net given select sources,
+and P(B|A) is all the future possibilities, then P(A|B) is the future predicted.
+
+
+						P(A|B) = P(B|A) · P(A)
+								 -------------
+									 P(B)
+
+
+
+How is it done today? What are the limits of current practice?
+ 
+Fragmented information sprawling different sources: social media, articles,
+conversations, lectures, talks. Not centralized.
+
+
+What is our approach? Why do we think it'll be successful?
+
+Selectively choose high quality sources of information, and compress to
+quantitative metrics. Build a relational network using those metrics. I don't
+think it'll be very successful - that requires a history of astronomical data.
+
+
+Checks for success?
+
+Predicted is close 'enough' to reality, in short-term.
